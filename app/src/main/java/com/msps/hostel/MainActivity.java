@@ -17,6 +17,7 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.ValueCallback;
 import android.widget.Toast;
 
 import java.io.OutputStream;
@@ -28,7 +29,10 @@ public class MainActivity extends Activity {
     private byte[] pendingBackup;
     private String pendingBackupFilename;
 
+    private ValueCallback<Uri[]> filePathCallback;
+
     private static final int CREATE_BACKUP_REQUEST = 501;
+    private static final int PICK_BACKUP_REQUEST = 502;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -52,7 +56,60 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
 
-        webView.setWebChromeClient(new WebChromeClient());
+        // JSON backup file chooser support.
+        webView.setWebChromeClient(new WebChromeClient() {
+
+            @Override
+            public boolean onShowFileChooser(
+                WebView view,
+                ValueCallback<Uri[]> callback,
+                FileChooserParams params
+            ) {
+                if (filePathCallback != null) {
+                    filePathCallback.onReceiveValue(null);
+                    filePathCallback = null;
+                }
+
+                filePathCallback = callback;
+
+                try {
+                    Intent intent = new Intent(
+                        Intent.ACTION_OPEN_DOCUMENT
+                    );
+
+                    intent.addCategory(
+                        Intent.CATEGORY_OPENABLE
+                    );
+
+                    intent.setType("*/*");
+
+                    intent.putExtra(
+                        Intent.EXTRA_MIME_TYPES,
+                        new String[] {
+                            "application/json",
+                            "text/json"
+                        }
+                    );
+
+                    intent.addFlags(
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    );
+
+                    startActivityForResult(
+                        intent,
+                        PICK_BACKUP_REQUEST
+                    );
+
+                    return true;
+
+                } catch (Exception e) {
+                    filePathCallback = null;
+                    callback.onReceiveValue(null);
+                    showMessage("Unable to open backup file picker");
+                    return false;
+                }
+            }
+        });
 
         webView.setWebViewClient(new WebViewClient() {
 
@@ -60,7 +117,7 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
 
-                // Connect website printing to Android printing.
+                // Preserve the existing printing bridge.
                 view.evaluateJavascript(
                     "(function(){"
                     + "window.print=function(){"
@@ -123,7 +180,10 @@ public class MainActivity extends Activity {
 
                     String safeFilename = filename == null
                         ? "MSPS_Backup.json"
-                        : filename.replaceAll("[^a-zA-Z0-9._-]", "_");
+                        : filename.replaceAll(
+                            "[^a-zA-Z0-9._-]",
+                            "_"
+                        );
 
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         saveBackupModern(bytes, safeFilename);
@@ -192,7 +252,6 @@ public class MainActivity extends Activity {
             Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
 
             intent.addCategory(Intent.CATEGORY_OPENABLE);
-
             intent.setType("application/json");
 
             intent.putExtra(
@@ -222,9 +281,34 @@ public class MainActivity extends Activity {
     ) {
         super.onActivityResult(requestCode, resultCode, data);
 
+        // Handle JSON backup selection for website restoration.
+        if (requestCode == PICK_BACKUP_REQUEST) {
+
+            if (filePathCallback != null) {
+
+                Uri[] results = null;
+
+                if (resultCode == RESULT_OK
+                        && data != null
+                        && data.getData() != null) {
+
+                    results = new Uri[] {
+                        data.getData()
+                    };
+                }
+
+                filePathCallback.onReceiveValue(results);
+                filePathCallback = null;
+            }
+
+            return;
+        }
+
+        // Handle saving a backup file.
         if (requestCode == CREATE_BACKUP_REQUEST) {
 
-            if (resultCode == RESULT_OK && data != null
+            if (resultCode == RESULT_OK
+                    && data != null
                     && data.getData() != null
                     && pendingBackup != null) {
 
@@ -338,6 +422,12 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+
+        if (filePathCallback != null) {
+            filePathCallback.onReceiveValue(null);
+            filePathCallback = null;
+        }
+
         if (webView != null) {
             webView.destroy();
             webView = null;
